@@ -72,12 +72,14 @@ def resolve_item_id(db: Session, item_name: str, cutoff: float = 0.5):
         if item_name_lower in inv.item_name.lower():
             return inv, 1.0
 
-    # 2. Fall back to fuzzy string matching
-    names = [inv.item_name for inv in all_items]
-    close = difflib.get_close_matches(item_name, names, n=1, cutoff=cutoff)
+    # 2. Fall back to fuzzy string matching (case-insensitive, matching the
+    # substring check above - comparing raw-case strings was under-matching
+    # correct items just due to capitalization differences)
+    names_lower_map = {inv.item_name.lower(): inv for inv in all_items}
+    close = difflib.get_close_matches(item_name_lower, list(names_lower_map.keys()), n=1, cutoff=cutoff)
     if close:
-        matched_inv = next(inv for inv in all_items if inv.item_name == close[0])
-        score = difflib.SequenceMatcher(None, item_name_lower, close[0].lower()).ratio()
+        matched_inv = names_lower_map[close[0]]
+        score = difflib.SequenceMatcher(None, item_name_lower, close[0]).ratio()
         return matched_inv, score
 
     return None, 0.0

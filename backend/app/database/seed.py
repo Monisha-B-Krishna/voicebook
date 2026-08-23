@@ -81,6 +81,19 @@ def seed_database():
                 available_quantity=100,
                 rental_price=30.00
             ),
+                        Inventory(
+                item_name="Steel Plate",
+                category="Plates",
+                available_quantity=300,
+                rental_price=5.00
+            ),
+
+            Inventory(
+                item_name="Pathre (Vessel Set)",
+                category="Vessels",
+                available_quantity=100,
+                rental_price=25.00
+            ),
         ]
 
 

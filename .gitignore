@@ -6,3 +6,5 @@ __pycache__/
 data/audio/
 data/transactions.json
 api keys.txt
+backend/airflow/logs/
+backend/app/**/__pycache__/

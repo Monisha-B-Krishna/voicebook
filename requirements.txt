@@ -7,3 +7,10 @@ requests
 sounddevice
 scipy
 numpy
+fastapi
+uvicorn[standard]
+pydantic
+sqlalchemy
+psycopg2-binary
+requests
+python-dotenv

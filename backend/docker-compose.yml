@@ -1,0 +1,182 @@
+services:
+
+
+
+  # ==========================================================
+  # POSTGRESQL
+  # ==========================================================
+
+  postgres:
+    image: postgres:15
+    container_name: voicebook-postgres
+
+    environment:
+      POSTGRES_USER: voicebook
+      POSTGRES_PASSWORD: voicebook_password
+      POSTGRES_DB: voicebook
+
+    ports:
+      - "5432:5432"
+
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U voicebook"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+
+  # ==========================================================
+  # MINIO
+  # ==========================================================
+
+  minio:
+    image: minio/minio:latest
+    container_name: voicebook-minio
+
+    command: server /data --console-address ":9001"
+
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin123
+
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+
+    volumes:
+      - minio_data:/data
+
+
+  # ==========================================================
+  # AIRFLOW METADATA DATABASE
+  # ==========================================================
+
+  airflow-db:
+    image: postgres:15
+    container_name: voicebook-airflow-db
+
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+
+    volumes:
+      - airflow_postgres_data:/var/lib/postgresql/data
+
+
+  # ==========================================================
+  # AIRFLOW INIT
+  # ==========================================================
+
+  airflow-init:
+    image: apache/airflow:2.10.5
+
+    depends_on:
+      airflow-db:
+        condition: service_started
+
+    environment:
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-db:5432/airflow
+
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+      - ./airflow/plugins:/opt/airflow/plugins
+
+    command:
+      - bash
+      - -c
+      - |
+        airflow db migrate &&
+        airflow users create \
+          --username admin \
+          --password admin \
+          --firstname VoiceBook \
+          --lastname Admin \
+          --role Admin \
+          --email admin@voicebook.local || true
+
+
+  # ==========================================================
+  # AIRFLOW WEBSERVER
+  # ==========================================================
+
+  airflow-webserver:
+    image: apache/airflow:2.10.5
+
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+    environment:
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-db:5432/airflow
+
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+      - ./airflow/plugins:/opt/airflow/plugins
+
+    ports:
+      - "8080:8080"
+
+    command: webserver
+
+
+  # ==========================================================
+  # AIRFLOW SCHEDULER
+  # ==========================================================
+
+  airflow-scheduler:
+    image: apache/airflow:2.10.5
+
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+    environment:
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-db:5432/airflow
+
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+      - ./airflow/plugins:/opt/airflow/plugins
+
+    command: scheduler
+
+
+  # ==========================================================
+  # METABASE
+  # ==========================================================
+
+  metabase:
+    image: metabase/metabase:latest
+    container_name: voicebook-metabase
+
+    ports:
+      - "3000:3000"
+
+    volumes:
+      - metabase_data:/metabase.db
+
+
+volumes:
+
+  postgres_data:
+  airflow_postgres_data:
+  minio_data:
+  metabase_data:

@@ -1,0 +1,9 @@
+anthropic
+groq
+ollama
+pydantic
+python-dotenv
+requests
+sounddevice
+scipy
+numpy

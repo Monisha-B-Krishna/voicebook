@@ -3,4 +3,5 @@ venv/
 __pycache__/
 *.pyc
 .DS_Store
-data/raw_audio/
+data/audio/
+data/transactions.json

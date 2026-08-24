@@ -10,23 +10,54 @@ existing booking/payment/return endpoints.
 import difflib
 from sqlalchemy.orm import Session
 
-from app.models.database_models import Customer, Inventory
+from app.models.database_models import Customer, CustomerAlias, Inventory
+
+
+# Explicit alias table: maps common spoken words (English, Kannada
+# transliteration, or code-mixed) to a substring that should match the
+# canonical inventory item_name. Checked BEFORE fuzzy matching, since
+# fuzzy string similarity alone was producing low-confidence matches
+# (e.g. "chairs" -> "Plastic Chair" at only 0.53) and completely missing
+# valid domain words like "kaipatre" that aren't textually similar enough
+# to "Pathre" for difflib to catch on its own.
+#
+# NOTE FOR THE TEAM: this list is a starting point built from the example
+# sentences in the project proposal/abstract - it should grow as real
+# owner speech reveals more item name variants. Whoever owns inventory
+# data (Kiruba) should review/extend this alongside seed.py.
+ITEM_ALIASES = {
+    "chair": "chair",
+    "chairs": "chair",
+    "cheeru": "chair",
+    "plate": "plate",
+    "plates": "plate",
+    "pathre": "pathre",
+    "vessel": "pathre",
+    "vessels": "pathre",
+    "kaipatre": "pathre",   # hand-vessel - treated as the general vessel/pathre category
+    "kaipathre": "pathre",
+    "table": "table",
+    "tables": "table",
+    "tent": "tent",
+    "canopy": "tent",
+    "mat": "mat",
+    "mats": "mat",
+    "light": "light",
+    "lights": "light",
+}
 
 
 def find_or_create_customer(db: Session, name: str, phone: str = None) -> Customer:
     """
-    Looks up a customer by name (case-insensitive). If not found, creates
-    a new one. This does NOT do fuzzy alias matching yet (e.g. "Raju" vs
-    "Raju anna" vs "Rajashekar") - that's a known gap, see NOTES below.
+    Looks up a customer by name (case-insensitive), then by confirmed
+    alias, and only creates a new customer if neither matches.
 
-    NOTES for the team:
-    - The project's stated design goal is alias/nickname resolution
-      (e.g. "Raju" / "Raju anna" / "Rajashekar" -> same customer). This
-      function does simple exact-match-on-name for now. A real alias
-      table (customer_id -> list of known aliases) would be the correct
-      fix, but that's a schema change - flagging for a team decision
-      rather than guessing at a fuzzy-match threshold that could
-      silently merge two different real customers.
+    Per team decision: aliases are NEVER auto-detected or auto-merged here.
+    They only exist in the alias table after the owner has explicitly
+    confirmed "yes, same person" via voice (see /customers/similar and
+    /customers/{id}/aliases in routes/customers.py) - this function just
+    reads whatever's already been confirmed, it doesn't do any fuzzy
+    guessing itself.
     """
     existing = (
         db.query(Customer)
@@ -36,27 +67,69 @@ def find_or_create_customer(db: Session, name: str, phone: str = None) -> Custom
     if existing:
         return existing
 
+    alias_match = (
+        db.query(CustomerAlias)
+        .filter(CustomerAlias.alias_name.ilike(name.strip()))
+        .first()
+    )
+    if alias_match:
+        return db.query(Customer).filter(Customer.customer_id == alias_match.customer_id).first()
+
     new_customer = Customer(name=name.strip(), phone=phone, address=None)
     db.add(new_customer)
     db.flush()  # get the new customer_id without committing yet
     return new_customer
 
 
+def suggest_similar_customers(db: Session, name: str, cutoff: float = 0.6):
+    """
+    Returns a list of existing customers whose names are similar to the
+    given name, WITHOUT merging anything automatically. Intended for a
+    human (owner/admin) to review and confirm "yes this is the same
+    person" via voice (see /customers/similar in routes/customers.py).
+
+    DOCUMENTED LIMITATION (tested Aug 2026, not fixed - see project report):
+    This uses plain character-level string similarity (difflib), which
+    only catches name variants that share overlapping SUBSTRINGS - e.g.
+    "Raju" vs "Raju anna" scores high since one is literally contained in
+    the other. It does NOT catch real Indian nickname patterns like
+    "Rajashekar" -> "Raju" (measured similarity: 0.43, well below the 0.6
+    cutoff), even though any Kannada speaker would immediately recognize
+    "Raju" as a common nickname derived from "Rajashekar".
+
+    This is a genuine, known limitation of edit-distance-based matching
+    for nickname resolution - it doesn't encode cultural/linguistic
+    knowledge about how nicknames are actually formed. A more complete
+    solution would need either:
+      (a) a curated common-name-variant dictionary (Raja*->Raju,
+          Krishna->Krishna anna, etc.), or
+      (b) phonetic matching (Soundex/Metaphone-style algorithms)
+    Lowering the cutoff was considered and rejected - it trades this
+    false-negative problem for false positives (unrelated names getting
+    incorrectly flagged as possible matches), which is a worse failure
+    mode for a system handling real customer data and money.
+    """
+    all_customers = db.query(Customer).all()
+    matches = []
+    for cust in all_customers:
+        score = difflib.SequenceMatcher(None, name.lower(), cust.name.lower()).ratio()
+        if score >= cutoff and cust.name.lower() != name.lower():
+            matches.append((cust, score))
+    matches.sort(key=lambda x: x[1], reverse=True)
+    return matches
+
+
 def resolve_item_id(db: Session, item_name: str, cutoff: float = 0.5):
     """
-    Fuzzy-matches an NLU item string (e.g. "chair", "pathre", "kaipatre")
-    against the Inventory table's item_name (e.g. "Plastic Chair",
-    "Wedding Tent"). Returns (Inventory row, match_score) or (None, 0) if
-    nothing matches well enough.
+    Resolves an NLU item string (e.g. "chair", "pathre", "kaipatre")
+    against the Inventory table. Returns (Inventory row, match_score) or
+    (None, 0) if nothing matches well enough.
 
-    KNOWN GAP: the seeded inventory (Plastic Chair, Round Table, Wedding
-    Tent, LED Light, Plastic Mat) has NO vessel/pathre category at all,
-    despite the project's own example sentences using "pathre" as a core
-    example. "pathre" and "kaipatre" will currently resolve to nothing.
-    This needs either: (a) adding a Vessels/Pathre category to seed.py,
-    or (b) an explicit item alias/vocabulary table mapping spoken item
-    words to inventory categories. Flagging this rather than silently
-    matching "pathre" to something wrong like "Plastic Mat".
+    Matching order:
+    1. Alias table (ITEM_ALIASES above) - explicit, deterministic, highest
+       confidence for known domain vocabulary.
+    2. Exact substring match against inventory item_name.
+    3. Fuzzy string similarity as a last resort.
     """
     if not item_name:
         return None, 0.0
@@ -67,14 +140,19 @@ def resolve_item_id(db: Session, item_name: str, cutoff: float = 0.5):
 
     item_name_lower = item_name.strip().lower()
 
-    # 1. Try exact substring match first (e.g. "chair" in "plastic chair")
+    # 1. Alias table lookup
+    canonical = ITEM_ALIASES.get(item_name_lower)
+    if canonical:
+        for inv in all_items:
+            if canonical in inv.item_name.lower():
+                return inv, 1.0
+
+    # 2. Exact substring match (e.g. "chair" in "plastic chair")
     for inv in all_items:
         if item_name_lower in inv.item_name.lower():
             return inv, 1.0
 
-    # 2. Fall back to fuzzy string matching (case-insensitive, matching the
-    # substring check above - comparing raw-case strings was under-matching
-    # correct items just due to capitalization differences)
+    # 3. Fuzzy string matching, case-insensitive on both sides
     names_lower_map = {inv.item_name.lower(): inv for inv in all_items}
     close = difflib.get_close_matches(item_name_lower, list(names_lower_map.keys()), n=1, cutoff=cutoff)
     if close:

@@ -58,119 +58,136 @@ def process_voice_transaction(
     query_txns = [t for t in nlu_result.transactions if t.intent == "QUERY"]
 
     results = {"bookings": [], "payments": [], "returns": [], "queries": [], "errors": []}
-    new_booking_id = None  # if this request creates a booking, payments in
-                             # the SAME request attach to it automatically
+    new_booking_ids_by_customer = {}  # customer_name -> booking_id, for same-utterance payment attachment
 
     try:
         # ---------------- BOOKING(S) ----------------
-        if booking_txns:
-            # All booking transactions in one utterance share the same
-            # customer - use the first one's customer_name for the group.
-            customer_name = booking_txns[0].customer_name
-            if not customer_name:
-                results["errors"].append("Booking has no customer_name - cannot proceed.")
-            else:
-                customer = find_or_create_customer(db, customer_name)
+        # Booking transactions are grouped BY their own customer_name, not
+        # assumed to all belong to one customer - a single utterance CAN
+        # contain bookings for two different people (e.g. "Raju ge 50
+        # chair, Raju anna ge 10 plates"), so each distinct customer named
+        # gets their own Booking row.
+        booking_txns_with_names = [t for t in booking_txns if t.customer_name]
+        unnamed_booking_txns = [t for t in booking_txns if not t.customer_name]
 
-                # event_date: use the explicit date if the NLU resolved one,
-                # otherwise default to entry_date (today) - matches the
-                # documented design: "owner speaking today with no date
-                # mentioned means today, unless corrected."
-                event_date_str = booking_txns[0].date
-                event_date = (
-                    datetime.strptime(event_date_str, "%Y-%m-%d").date()
-                    if event_date_str else entry_date
+        for txn in unnamed_booking_txns:
+            results["errors"].append(
+                f"Booking item '{txn.item}' has no customer_name - cannot proceed with this item."
+            )
+
+        customer_groups = {}
+        for txn in booking_txns_with_names:
+            customer_groups.setdefault(txn.customer_name, []).append(txn)
+
+        for customer_name, group_txns in customer_groups.items():
+            customer = find_or_create_customer(db, customer_name)
+
+            # event_date: use this group's first explicit date if present,
+            # otherwise default to entry_date (today).
+            event_date_str = group_txns[0].date
+            event_date = (
+                datetime.strptime(event_date_str, "%Y-%m-%d").date()
+                if event_date_str else entry_date
+            )
+
+            # Resolve every item in THIS customer's group first - if any
+            # item can't be matched, reject only this customer's booking,
+            # not the whole request.
+            resolved_items = []
+            for txn in group_txns:
+                inv, score = resolve_item_id(db, txn.item)
+                if inv is None:
+                    results["errors"].append(
+                        f"Could not match item '{txn.item}' (for {customer_name}) to any "
+                        f"inventory item. This booking NOT created - please add this item "
+                        f"to inventory or correct the item name."
+                    )
+                else:
+                    resolved_items.append((txn, inv, score))
+
+            if len(resolved_items) == len(group_txns) and resolved_items:
+                total_amount = sum(
+                    float(inv.rental_price) * txn.quantity
+                    for txn, inv, _ in resolved_items
                 )
 
-                # Resolve every item first, before creating anything - if
-                # ANY item can't be matched to inventory, reject the whole
-                # booking rather than silently creating a partial/wrong one.
-                resolved_items = []
-                for txn in booking_txns:
-                    inv, score = resolve_item_id(db, txn.item)
-                    if inv is None:
+                booking = Booking(
+                    customer_id=customer.customer_id,
+                    booking_date=entry_date,
+                    event_date=event_date,
+                    total_amount=total_amount,
+                    status="confirmed",
+                )
+                db.add(booking)
+                db.flush()  # get booking_id without committing yet
+                new_booking_ids_by_customer[customer_name] = booking.booking_id
+
+                for txn, inv, score in resolved_items:
+                    item_total = float(inv.rental_price) * txn.quantity
+                    booking_item = BookingItem(
+                        booking_id=booking.booking_id,
+                        item_id=inv.item_id,
+                        quantity=txn.quantity,
+                        total_price=item_total,
+                    )
+                    db.add(booking_item)
+                    if score < 1.0:
                         results["errors"].append(
-                            f"Could not match item '{txn.item}' to any inventory item. "
-                            f"Booking NOT created - please add this item to inventory "
-                            f"or correct the item name."
+                            f"NOTE: item '{txn.item}' fuzzy-matched to "
+                            f"'{inv.item_name}' (confidence {score:.2f}) - verify this is correct."
                         )
-                    else:
-                        resolved_items.append((txn, inv, score))
 
-                if len(resolved_items) == len(booking_txns) and resolved_items:
-                    total_amount = sum(
-                        float(inv.rental_price) * txn.quantity
+                results["bookings"].append({
+                    "booking_id": booking.booking_id,
+                    "customer": customer.name,
+                    "event_date": str(event_date),
+                    "total_amount": total_amount,
+                    "items": [
+                        {"item": inv.item_name, "quantity": txn.quantity}
                         for txn, inv, _ in resolved_items
-                    )
-
-                    booking = Booking(
-                        customer_id=customer.customer_id,
-                        booking_date=entry_date,
-                        event_date=event_date,
-                        total_amount=total_amount,
-                        status="confirmed",
-                    )
-                    db.add(booking)
-                    db.flush()  # get booking_id without committing yet
-                    new_booking_id = booking.booking_id
-
-                    for txn, inv, score in resolved_items:
-                        item_total = float(inv.rental_price) * txn.quantity
-                        booking_item = BookingItem(
-                            booking_id=booking.booking_id,
-                            item_id=inv.item_id,
-                            quantity=txn.quantity,
-                            total_price=item_total,
-                        )
-                        db.add(booking_item)
-                        if score < 1.0:
-                            results["errors"].append(
-                                f"NOTE: item '{txn.item}' fuzzy-matched to "
-                                f"'{inv.item_name}' (confidence {score:.2f}) - verify this is correct."
-                            )
-
-                    results["bookings"].append({
-                        "booking_id": booking.booking_id,
-                        "customer": customer.name,
-                        "event_date": str(event_date),
-                        "total_amount": total_amount,
-                        "items": [
-                            {"item": inv.item_name, "quantity": txn.quantity}
-                            for txn, inv, _ in resolved_items
-                        ],
-                    })
+                    ],
+                })
 
         # ---------------- PAYMENT(S) ----------------
         for txn in payment_txns:
-            target_booking_id = new_booking_id  # payment in same utterance as a booking
+            target_booking_id = new_booking_ids_by_customer.get(txn.customer_name)  # payment in same utterance as a booking, for THIS customer
 
             if target_booking_id is None:
                 # No booking created in THIS request - find the customer's
-                # most recent non-cancelled booking to attach payment to.
-                # LIMITATION: this is a best-effort guess when the owner
-                # says something like "Suresh paid 2000" with no booking
-                # context in the same utterance. If a customer has multiple
-                # open bookings, this could attach to the wrong one - a
-                # real system might ask the owner to disambiguate by voice
-                # ("which booking - the June 15 one or the July 3 one?").
-                # Flagging this as a design gap, not fixing here.
+                # bookings to attach payment to.
                 if not txn.customer_name:
                     results["errors"].append("Payment has no customer_name - cannot proceed.")
                     continue
 
                 customer = find_or_create_customer(db, txn.customer_name)
-                latest_booking = (
+                open_bookings = (
                     db.query(Booking)
                     .filter(Booking.customer_id == customer.customer_id, Booking.status != "cancelled")
                     .order_by(Booking.booking_id.desc())
-                    .first()
+                    .all()
                 )
-                if not latest_booking:
+
+                if not open_bookings:
                     results["errors"].append(
                         f"No existing booking found for '{txn.customer_name}' to attach this payment to."
                     )
                     continue
-                target_booking_id = latest_booking.booking_id
+
+                if len(open_bookings) > 1:
+                    # SAFETY FIX: don't silently guess which booking this
+                    # payment belongs to - that risk was flagged as a real
+                    # gap. Instead, fail clearly and list the options so a
+                    # human (or a future disambiguation voice prompt) can
+                    # resolve it correctly.
+                    results["errors"].append(
+                        f"'{txn.customer_name}' has {len(open_bookings)} open bookings - "
+                        f"cannot determine which one this payment is for. "
+                        f"Booking IDs: {[b.booking_id for b in open_bookings]}. "
+                        f"Payment NOT recorded - please specify which booking."
+                    )
+                    continue
+
+                target_booking_id = open_bookings[0].booking_id
 
             if txn.amount is None:
                 results["errors"].append("Payment transaction has no amount - skipped.")
@@ -249,8 +266,13 @@ def process_voice_transaction(
             })
 
         # ---------------- LOG THE RAW UTTERANCE ----------------
+        # If multiple bookings were created (multiple customers in one
+        # utterance), just log against the first one - this log is a
+        # convenience reference, not the source of truth (nlu_json below
+        # has the complete picture regardless).
+        any_booking_id = next(iter(new_booking_ids_by_customer.values()), None)
         log_entry = UtteranceLog(
-            booking_id=new_booking_id,
+            booking_id=any_booking_id,
             raw_text_kn=nlu_result.raw_transcript,
             nlu_json=nlu_result.model_dump_json(),
             confidence=None,  # no confidence score currently produced by the NLU layer

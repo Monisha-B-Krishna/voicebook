@@ -49,7 +49,14 @@ RETURN when there is an EXPLICIT signal that items are coming BACK from the cust
 to the store - words like "return", "vapas", "tirugi", "tandidru", "waapas kotta". If \
 you don't see one of those explicit return-signal words, it's a BOOKING, not a RETURN, \
 even if the sentence uses "given/kotta" language.
-- customer_name: the customer's name or nickname, if mentioned
+- customer_name: the customer's name or nickname, if mentioned. IMPORTANT: each \
+transaction has its OWN customer_name - do not assume every transaction in the \
+utterance is for the same person. If the utterance mentions a different name partway \
+through (e.g. "Raju ge 50 chair book maadidaare, Raju anna ge 10 plates book aagide"), \
+each transaction gets the customer_name that was actually stated closest to it, even \
+if that means two transactions in the same output have two different customer_names. \
+Never leave customer_name null just because a different name appeared earlier in the \
+utterance for a different transaction.
 - date: the booking/event date if a month+day are mentioned (e.g. "June 15"), OR if \
 a relative day word is used ("today", "tomorrow", "yesterday", "ಇವತ್ತು", "ನಾಳೆ", \
 "ನಿನ್ನೆ"). For relative day words, just note that a date was mentioned - the exact \

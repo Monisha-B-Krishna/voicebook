@@ -21,8 +21,12 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))  # project root
 
+from nlp_alias_check import check_and_resolve_aliases
+
 
 def send_transaction(nlu_result_dict: dict, base_url: str = "http://localhost:8000"):
+    check_and_resolve_aliases(nlu_result_dict, base_url=base_url)
+
     response = requests.post(
         f"{base_url}/voice-transactions/",
         json=nlu_result_dict,

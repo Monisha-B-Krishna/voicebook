@@ -234,6 +234,43 @@ class Return(Base):
 
 
 # ============================================================
+# CUSTOMER ALIASES
+# ============================================================
+# ADDED FOR DISCUSSION - not yet wired into any endpoint logic.
+# Purpose: support "Raju" / "Raju anna" / "Rajashekar" all resolving to
+# the same customer, per the project's stated design goal.
+#
+# OPEN DESIGN QUESTION for the team: how should aliases get added?
+#   (a) Automatically, whenever a fuzzy-similar name is spoken again
+#       (risk: could silently merge two different real customers)
+#   (b) Manually, only when the owner explicitly confirms "yes, same
+#       person" (safer, but adds a confirmation step)
+# This table is ready either way - the decision affects the service
+# logic that writes to it, not the schema itself.
+
+class CustomerAlias(Base):
+
+    __tablename__ = "customer_aliases"
+
+    alias_id = Column(
+        Integer,
+        primary_key=True,
+        autoincrement=True
+    )
+
+    customer_id = Column(
+        Integer,
+        ForeignKey("customers.customer_id"),
+        nullable=False
+    )
+
+    alias_name = Column(
+        String(100),
+        nullable=False
+    )
+
+
+# ============================================================
 # UTTERANCE LOGS
 # ============================================================
 

@@ -91,3 +91,15 @@ def add_customer_alias(
     db.refresh(alias)
 
     return {"status": "success", "customer_id": customer_id, "alias_name": alias.alias_name}
+
+
+@router.get("/{customer_id}/aliases")
+def get_customer_aliases(
+    customer_id: int,
+    db: Session = Depends(get_db)
+):
+    """Lists confirmed aliases for a customer - needed by the mobile app's
+    customer search (which searches name + aliases, per Customer.matches
+    in the Flutter model)."""
+    aliases = db.query(CustomerAlias).filter(CustomerAlias.customer_id == customer_id).all()
+    return [{"alias_id": a.alias_id, "alias_name": a.alias_name} for a in aliases]

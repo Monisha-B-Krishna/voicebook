@@ -9,11 +9,6 @@ IMPORTANT: this endpoint does NOT save anything to the database. It only
 parses. The app calls /voice-transactions/ separately, after the owner
 confirms on screen, to actually save - keeping "understand what was said"
 and "commit it to the database" as two distinct, separately-testable steps.
-
-This is the same principle as the local nlp/demo/full_demo_pipeline.py
-scaffold (parse first, confirm, then save) - just reachable over HTTP
-instead of running as a local script, since a phone can't run Python
-scripts directly.
 """
 
 import sys
@@ -46,20 +41,30 @@ async def process_audio(
     parsed NLUResult as JSON - the app displays this for owner review,
     it is NOT saved here.
     """
-    # Save the uploaded audio to a temp file, since asr_client.transcribe()
-    # expects a file path (matching how it's used in the local pipeline).
     suffix = os.path.splitext(file.filename)[1] or ".wav"
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         contents = await file.read()
         tmp.write(contents)
         tmp_path = tmp.name
 
+    # DEBUG: log the uploaded file size, so we can see in the terminal
+    # whether the mobile app is actually sending real audio data or an
+    # empty/near-empty file.
+    file_size = len(contents)
+    print(f"[voice/process-audio] Received file: {file.filename}, size: {file_size} bytes")
+
     try:
         transcript = transcribe(tmp_path)
+        # DEBUG: log the actual transcript text - this tells us definitively
+        # whether the mic captured real speech or silence/garbage.
+        print(f"[voice/process-audio] ASR transcript: {transcript!r}")
+
         result = parse_utterance(transcript, backend=backend)
+        print(f"[voice/process-audio] Parsed {len(result.transactions)} transaction(s)")
     except Exception as e:
+        print(f"[voice/process-audio] ERROR: {e}")
         return {"status": "error", "message": str(e)}
     finally:
-        os.unlink(tmp_path)  # clean up the temp file regardless of success/failure
+        os.unlink(tmp_path)
 
     return {"status": "success", "result": result.model_dump()}

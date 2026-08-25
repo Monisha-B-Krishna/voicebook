@@ -29,17 +29,15 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 TTS_OUTPUT_FOLDER = PROJECT_ROOT / "data" / "audio" / "tts_output"
 
 
-def speak(text: str, language_code: str = "kn-IN"):
+def _call_sarvam_tts(text: str, language_code: str = "kn-IN") -> bytes:
     """
-    Converts text to speech via Sarvam TTS, saves into data/audio/tts_output/
-    with a timestamped filename, and plays it immediately.
+    Shared core: calls Sarvam TTS and returns raw decoded audio bytes.
+    Used by both speak() (local playback, for the desktop demo) and
+    synthesize_audio_bytes() (server-side, for the mobile app - the
+    server generates the bytes, the PHONE plays them, not the server).
     """
     if not SARVAM_API_KEY:
         raise ValueError("SARVAM_API_KEY not found in .env file")
-
-    TTS_OUTPUT_FOLDER.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_path = TTS_OUTPUT_FOLDER / f"tts_output_{timestamp}.wav"
 
     headers = {
         "api-subscription-key": SARVAM_API_KEY,
@@ -59,7 +57,31 @@ def speak(text: str, language_code: str = "kn-IN"):
     if not audio_b64_list:
         raise ValueError(f"Unexpected TTS response shape. Keys: {list(result.keys())}")
 
-    audio_bytes = base64.b64decode(audio_b64_list[0])
+    return base64.b64decode(audio_b64_list[0])
+
+
+def synthesize_audio_bytes(text: str, language_code: str = "kn-IN") -> bytes:
+    """
+    Server-side TTS: returns raw WAV audio bytes for the caller (e.g. a
+    FastAPI endpoint) to send to the mobile app, which plays them via
+    AudioService.playBytes(). No local file writing, no winsound - this
+    runs on the backend server, not the desktop demo machine.
+    """
+    return _call_sarvam_tts(text, language_code)
+
+
+def speak(text: str, language_code: str = "kn-IN"):
+    """
+    Converts text to speech via Sarvam TTS, saves into data/audio/tts_output/
+    with a timestamped filename, and plays it immediately. This is for the
+    LOCAL desktop demo pipeline (full_demo_pipeline.py) - Windows-only due
+    to winsound.
+    """
+    TTS_OUTPUT_FOLDER.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_path = TTS_OUTPUT_FOLDER / f"tts_output_{timestamp}.wav"
+
+    audio_bytes = _call_sarvam_tts(text, language_code)
 
     with open(output_path, "wb") as f:
         f.write(audio_bytes)

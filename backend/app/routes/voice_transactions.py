@@ -282,8 +282,22 @@ def process_voice_transaction(
 
         db.commit()
 
+        # Gold: the final, validated, curated result - AFTER the database
+        # write succeeded. Non-fatal if MinIO archiving fails - the actual
+        # transaction is already safely committed regardless.
+        try:
+            from app.services.minio_client import archive_gold
+            archive_gold({
+                "raw_transcript": nlu_result.raw_transcript,
+                "entry_timestamp": nlu_result.entry_timestamp,
+                "results": results,
+            })
+        except Exception as archive_err:
+            print(f"[voice-transactions] MinIO Gold archiving failed (non-fatal): {archive_err}")
+
     except Exception as e:
         db.rollback()
         return {"status": "error", "message": str(e), "partial_results": results}
 
     return {"status": "success", "results": results}
+

@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'package:dio/dio.dart';
 import '../models/voice_transaction.dart';
 
@@ -137,5 +138,78 @@ class ApiService {
       data: {'alias_name': aliasName},
       options: _authOptions,
     );
+  }
+
+  /// Answers a QUERY intent (e.g. "what does Suresh owe?") by looking up
+  /// the customer by name, then fetching their computed balance. Returns
+  /// null if no matching customer was found.
+  Future<Map<String, dynamic>?> getBalanceForCustomerName(String customerName) async {
+    final customers = await fetchCustomers();
+    final match = customers.firstWhere(
+      (c) => (c['name'] as String).toLowerCase() == customerName.toLowerCase(),
+      orElse: () => {},
+    );
+    if (match.isEmpty) return null;
+
+    final res = await _dio.get(
+      '$baseUrl/customers/${match['customer_id']}/balance',
+      options: _authOptions,
+    );
+    return res.data as Map<String, dynamic>;
+  }
+
+  /// Answers "what did this customer order?" type questions - a DIFFERENT
+  /// question from balance, needing a different endpoint/answer.
+  Future<Map<String, dynamic>?> getOrdersForCustomerName(String customerName) async {
+    final customers = await fetchCustomers();
+    final match = customers.firstWhere(
+      (c) => (c['name'] as String).toLowerCase() == customerName.toLowerCase(),
+      orElse: () => {},
+    );
+    if (match.isEmpty) return null;
+
+    final res = await _dio.get(
+      '$baseUrl/customers/${match['customer_id']}/orders',
+      options: _authOptions,
+    );
+    return res.data as Map<String, dynamic>;
+  }
+
+  /// Transcribes short audio WITHOUT running the full NLU pipeline -
+  /// used for yes/no confirmation replies where we only need the words,
+  /// not structured intent extraction (faster, and avoids wasting an
+  /// LLM call on something a simple keyword match can handle).
+  Future<String> transcribeOnly(String audioFilePath) async {
+    final formData = FormData.fromMap({
+      'file': await MultipartFile.fromFile(audioFilePath, filename: 'reply.wav'),
+    });
+    final res = await _dio.post(
+      '$baseUrl/voice/transcribe-only',
+      data: formData,
+      options: _authOptions,
+    );
+    final body = res.data as Map<String, dynamic>;
+    if (body['status'] == 'error') {
+      throw Exception(body['message'] ?? 'Transcription failed');
+    }
+    return body['transcript'] as String;
+  }
+
+  /// General-purpose TTS: converts any text to spoken Kannada audio bytes.
+  /// Returns null if synthesis fails (e.g. Sarvam credits exhausted) -
+  /// callers should fall back to showing text only in that case.
+  Future<List<int>?> synthesizeSpeech(String text) async {
+    try {
+      final res = await _dio.post(
+        '$baseUrl/tts/synthesize',
+        data: {'text': text, 'language_code': 'kn-IN'},
+        options: _authOptions,
+      );
+      final body = res.data as Map<String, dynamic>;
+      if (body['status'] != 'success') return null;
+      return base64Decode(body['audio_base64'] as String);
+    } catch (e) {
+      return null;
+    }
   }
 }

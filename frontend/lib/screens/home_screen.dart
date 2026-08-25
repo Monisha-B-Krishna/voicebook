@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../l10n/app_strings.dart';
@@ -87,7 +88,92 @@ class _HomeScreenState extends State<HomeScreen> {
         return;
       }
 
-      _showConfirmSheet(result);
+      // Handle QUERY intents separately - these are read-only questions
+      // ("what does Suresh owe?"), not something to confirm/save. Answer
+      // directly instead of showing the confirm sheet.
+      final queryTxns = result.transactions.where((t) => t.intent == TransactionIntent.query).toList();
+      final actionableTxns = result.transactions.where((t) => t.intent != TransactionIntent.query).toList();
+
+      if (queryTxns.isNotEmpty) {
+        // Decide WHICH question was actually asked, using keywords from
+        // the raw transcript - "order"/"book"/"ಆರ್ಡರ್"/"ಬುಕ್" means an
+        // order-details question, "baaki"/"balance"/"estu"/"ಬಾಕಿ"/"ಎಷ್ಟು"
+        // means a balance question. Without this, EVERY query got answered
+        // with balance regardless of what was actually asked - a real bug
+        // this fixes.
+        final transcript = result.rawTranscript.toLowerCase();
+        final orderKeywords = ['order', 'ಆರ್ಡರ್', 'book', 'ಬುಕ್', 'list', 'details'];
+        final balanceKeywords = ['baaki', 'ಬಾಕಿ', 'balance', 'estu', 'ಎಷ್ಟು', 'owe'];
+
+        final asksAboutOrders = orderKeywords.any((k) => transcript.contains(k));
+        final asksAboutBalance = balanceKeywords.any((k) => transcript.contains(k));
+
+        // If BOTH or NEITHER keyword set matched, default to balance -
+        // matches the original documented example ("estu baaki
+        // haakidaane?"). Order-details only wins when its keywords are
+        // present and balance keywords are NOT.
+        final wantsOrders = asksAboutOrders && !asksAboutBalance;
+
+        for (final q in queryTxns) {
+          if (q.customerName == null) continue;
+          try {
+            final info = wantsOrders
+                ? await api.getOrdersForCustomerName(q.customerName!)
+                : await api.getBalanceForCustomerName(q.customerName!);
+
+            if (!mounted) return;
+
+            if (info == null) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('No customer found matching "${q.customerName}"')),
+              );
+              continue;
+            }
+
+            final displayText = wantsOrders
+                ? (info['spoken_text'] as String)
+                : '${info['customer_name']} owes ₹${(info['balance_due'] as num).toStringAsFixed(0)}';
+
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text(displayText), duration: const Duration(seconds: 5)),
+            );
+
+            // Play the spoken answer if the backend generated TTS audio -
+            // it may be null if Sarvam TTS failed server-side (e.g. credits
+            // exhausted), in which case we just show the text above.
+            final audioBase64 = info['audio_base64'] as String?;
+            if (audioBase64 != null) {
+              try {
+                final audioBytes = base64Decode(audioBase64);
+                await _audio.playBytes(audioBytes);
+              } catch (e) {
+                // Playback failure shouldn't block the rest of the flow -
+                // the text answer is already shown regardless.
+                debugPrint('TTS playback failed: $e');
+              }
+            }
+          } catch (e) {
+            if (!mounted) return;
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Could not look up answer: $e')),
+            );
+          }
+        }
+      }
+
+      if (actionableTxns.isEmpty) {
+        // Was ONLY query transaction(s) - nothing left to confirm/save.
+        return;
+      }
+
+      // Show the confirm sheet only for the actionable (non-query) transactions.
+      _showConfirmSheet(VoiceParseResult(
+        rawTranscript: result.rawTranscript,
+        entryTimestamp: result.entryTimestamp,
+        transactions: actionableTxns,
+        isMultiIntent: actionableTxns.length > 1,
+        confidenceNote: result.confidenceNote,
+      ));
     } catch (e) {
       if (!mounted) return;
       setState(() => _isProcessing = false);
@@ -104,6 +190,17 @@ class _HomeScreenState extends State<HomeScreen> {
     final savedMsg = context.tr('saved_successfully', listen: false);
     final errorMsg = context.tr('could_not_start_recording', listen: false);
 
+    // Build a spoken Kannada-English readback and play it - matches the
+    // project's original design ("read it back before saving"), which
+    // previously only happened as on-screen text, never actually spoken
+    // on the mobile app.
+    final readbackText = _buildReadbackText(result);
+    api.synthesizeSpeech(readbackText).then((audioBytes) {
+      if (audioBytes != null && mounted) {
+        _audio.playBytes(audioBytes);
+      }
+    });
+
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -114,6 +211,8 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
       builder: (sheetContext) => VoiceConfirmSheet(
         result: result,
+        api: api,
+        audio: _audio,
         onConfirm: (finalResult) async {
           try {
             final saveResults = await api.saveVoiceResult(finalResult);
@@ -236,5 +335,30 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       ),
     );
+  }
+
+  /// Builds a code-mixed Kannada-English readback sentence for TTS,
+  /// mirroring the same phrasing style used in the local desktop demo
+  /// pipeline (nlp/demo/confirm.py) - e.g. "Raju ge 30 chair book agide."
+  /// Keeping this consistent means the same words that tested well
+  /// locally also sound natural here.
+  String _buildReadbackText(VoiceParseResult result) {
+    final parts = <String>[];
+    for (final txn in result.transactions) {
+      switch (txn.intent) {
+        case TransactionIntent.booking:
+          parts.add('${txn.customerName ?? ""} ge ${txn.quantity ?? ""} ${txn.item ?? ""} book agide');
+          break;
+        case TransactionIntent.payment:
+          parts.add('${txn.customerName ?? ""} inda ${txn.amount?.toStringAsFixed(0) ?? ""} rupees payment sigide');
+          break;
+        case TransactionIntent.returnItem:
+          parts.add('${txn.customerName ?? ""} ${txn.quantity ?? ""} ${txn.item ?? ""} return madidru');
+          break;
+        default:
+          break;
+      }
+    }
+    return parts.isEmpty ? '' : '${parts.join(". ")}. Correct-a?';
   }
 }

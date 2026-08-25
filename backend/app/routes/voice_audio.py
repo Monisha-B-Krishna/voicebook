@@ -22,6 +22,7 @@ from fastapi import APIRouter, UploadFile, File, Query
 
 from nlp.asr.asr_client import transcribe
 from nlp.nlu.nlu_client import parse_utterance
+from app.services.minio_client import archive_bronze, archive_silver
 
 
 router = APIRouter(
@@ -61,6 +62,16 @@ async def process_audio(
 
         result = parse_utterance(transcript, backend=backend)
         print(f"[voice/process-audio] Parsed {len(result.transactions)} transaction(s)")
+
+        # Bronze: raw audio + raw ASR transcript. Silver: parsed NLU JSON.
+        # If MinIO archiving fails (e.g. container not running), log it but
+        # still return the parsed result - archiving shouldn't block the
+        # actual user-facing feature from working.
+        try:
+            archive_bronze(contents, transcript)
+            archive_silver(result.model_dump())
+        except Exception as archive_err:
+            print(f"[voice/process-audio] MinIO archiving failed (non-fatal): {archive_err}")
     except Exception as e:
         print(f"[voice/process-audio] ERROR: {e}")
         return {"status": "error", "message": str(e)}

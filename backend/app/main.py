@@ -11,6 +11,7 @@ from app.routes.voice_transactions import router as voice_transactions_router
 from app.routes.voice_audio import router as voice_audio_router
 from app.routes.voice_transcribe import router as voice_transcribe_router
 from app.routes.tts import router as tts_router
+from app.routes.analytics import router as analytics_router
 
 app = FastAPI(
     title="VoiceBook Backend",
@@ -28,6 +29,7 @@ app.include_router(voice_transactions_router)
 app.include_router(voice_audio_router)
 app.include_router(voice_transcribe_router)
 app.include_router(tts_router)
+app.include_router(analytics_router)
 
 
 @app.get("/")

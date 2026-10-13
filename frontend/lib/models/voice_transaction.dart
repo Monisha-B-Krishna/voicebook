@@ -7,7 +7,7 @@
 /// customers in one sentence - all of these are real, tested cases in
 /// the actual NLU pipeline). The UI must show a LIST, not assume one.
 
-enum TransactionIntent { booking, payment, returnItem, query, unknown }
+enum TransactionIntent { booking, payment, returnItem, query, complete, cancel, unknown }
 
 TransactionIntent _intentFromString(String? value) {
   switch (value) {
@@ -19,6 +19,10 @@ TransactionIntent _intentFromString(String? value) {
       return TransactionIntent.returnItem;
     case 'QUERY':
       return TransactionIntent.query;
+    case 'COMPLETE':
+      return TransactionIntent.complete;
+    case 'CANCEL':
+      return TransactionIntent.cancel;
     default:
       return TransactionIntent.unknown;
   }
@@ -66,7 +70,11 @@ class VoiceTransaction {
                     ? 'RETURN'
                     : intent == TransactionIntent.query
                         ? 'QUERY'
-                        : 'UNKNOWN',
+                        : intent == TransactionIntent.complete
+                            ? 'COMPLETE'
+                            : intent == TransactionIntent.cancel
+                                ? 'CANCEL'
+                                : 'UNKNOWN',
         'customer_name': customerName,
         'date': date,
         'item': item,

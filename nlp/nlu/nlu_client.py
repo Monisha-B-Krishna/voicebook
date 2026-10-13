@@ -39,7 +39,24 @@ You will receive a transcript of the owner's speech, in code-mixed Kannada-Engli
 Your job: extract one or more structured transactions from the utterance.
 
 Each transaction has:
-- intent: one of BOOKING, PAYMENT, RETURN, QUERY, UNKNOWN
+- intent: one of BOOKING, PAYMENT, RETURN, QUERY, COMPLETE, CANCEL, UNKNOWN
+
+COMPLETE is a distinct intent from the other four: use it when the owner is marking an \
+EXISTING booking/order as finished/done/wrapped up - e.g. "Raju's order is complete", \
+"Krishna order mugithu", "Suresh ge booking complete agide". This is NOT the same as \
+RETURN (which is specifically about physical items coming back with a quantity) or \
+PAYMENT (money changing hands) - COMPLETE just marks the whole booking as done, no \
+item/quantity/amount needed. Only customer_name is required for a COMPLETE transaction.
+
+CANCEL is a SEPARATE intent from COMPLETE, and the two are OPPOSITE outcomes - never \
+confuse them. Use CANCEL when the owner is explicitly calling off, cancelling, or \
+voiding an existing booking - e.g. "Raju's order is cancelled", "Krishna booking \
+cancel maadi", "Suresh ge order beda, cancel maadi". Explicit cancel-signal words to \
+look for: "cancel", "cancelled", "beda" (in a cancellation sense, not a rejection of a \
+confirmation prompt), "ರದ್ದು" (raddu - Kannada for cancelled), "voided". If the utterance says the order is \
+finished/done/wrapped up with no cancellation language, that is COMPLETE, not CANCEL. \
+If it explicitly says to cancel/call off/void the order, that is CANCEL, not COMPLETE. \
+Only customer_name is required for a CANCEL transaction.
 
 IMPORTANT - disambiguating BOOKING vs RETURN: words like "kottiddivi"/"kotta"/"given" \
 are AMBIGUOUS on their own - they can describe items going OUT (owner issuing items to \
@@ -57,13 +74,26 @@ each transaction gets the customer_name that was actually stated closest to it, 
 if that means two transactions in the same output have two different customer_names. \
 Never leave customer_name null just because a different name appeared earlier in the \
 utterance for a different transaction.
+
+AGGREGATE QUERIES (asking about MULTIPLE customers or items, not one named person): \
+some QUERY utterances genuinely have NO customer name at all - e.g. "which customers \
+have a balance?", "who owes more than 5000 rupees?", "how many people have booked \
+chairs?", "how many chairs are left?". For these, correctly leave customer_name as \
+null - do NOT invent a name. Instead:
+  - If a money threshold is mentioned ("more than 5000", "jasti 5000 rupees"), put \
+that number in the amount field.
+  - If an item is mentioned ("chairs", "pathre"), put it in the item field.
+These aggregate queries are still intent=QUERY, just with customer_name=null and \
+item/amount populated instead - this is how the downstream system tells an aggregate \
+question apart from a question about one specific customer.
 - date: the booking/event date if a month+day are mentioned (e.g. "June 15"), OR if \
 a relative day word is used ("today", "tomorrow", "yesterday", "ಇವತ್ತು", "ನಾಳೆ", \
-"ನಿನ್ನೆ"). For relative day words, just note that a date was mentioned - the exact \
+"ನಿನ್ನೆ"), OR if a weekday name is mentioned ("next Friday", "Monday", etc.). For \
+relative day words and weekday names, just note that a date was mentioned - the exact \
 date will be computed automatically downstream from the system clock, so you don't \
 need to calculate it yourself; any placeholder YYYY-MM-DD is fine, it will be \
 overridden. If NO date evidence at all is mentioned (no month, no day, no relative \
-word), set date to null - do not invent a date from nothing.
+word, no weekday name), set date to null - do not invent a date from nothing.
 - item: the item/vessel type mentioned (e.g. chairs, pathre, canopy)
 - quantity: number of items, as an integer
 - amount: money amount mentioned, as a number (INR)
@@ -187,6 +217,18 @@ RELATIVE_DAY_PATTERN = re.compile(
     "|".join(re.escape(w) for w in RELATIVE_DAY_WORDS), re.IGNORECASE
 )
 
+# Weekday names for expressions like "next Friday" - genuinely spoken words
+# with a clear, computable meaning: the nearest upcoming occurrence of that
+# weekday (if today itself is that weekday, "next" means next WEEK's
+# occurrence, not today - matches how people actually use the phrase).
+WEEKDAY_NAMES = {
+    "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+    "friday": 4, "saturday": 5, "sunday": 6,
+}
+WEEKDAY_PATTERN = re.compile(
+    "|".join(WEEKDAY_NAMES.keys()), re.IGNORECASE
+)
+
 
 def _detect_relative_day_offset(transcript: str):
     """Returns a day offset (int) if a relative day word is found, else None."""
@@ -194,6 +236,26 @@ def _detect_relative_day_offset(transcript: str):
     if not match:
         return None
     return RELATIVE_DAY_WORDS[match.group(0).lower()]
+
+
+def _detect_next_weekday_date(transcript: str, entry_dt: datetime):
+    """
+    Returns an ISO date string for the next occurrence of a named weekday
+    (e.g. "next Friday" -> the upcoming Friday's date), or None if no
+    weekday name is mentioned. If today itself IS that weekday, resolves
+    to next week's occurrence, not today - matches natural usage of
+    "next <weekday>".
+    """
+    match = WEEKDAY_PATTERN.search(transcript.lower())
+    if not match:
+        return None
+
+    target_weekday = WEEKDAY_NAMES[match.group(0).lower()]
+    days_ahead = (target_weekday - entry_dt.weekday()) % 7
+    if days_ahead == 0:
+        days_ahead = 7
+
+    return (entry_dt + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
 
 
 def _transcript_has_explicit_year(transcript: str) -> bool:
@@ -223,19 +285,26 @@ def _resolve_dates(data: dict, transcript: str, entry_dt: datetime) -> dict:
     1. Relative day word found ("today"/"ಇವತ್ತು" etc.) -> compute the actual
        date from entry_dt + offset, override completely regardless of what
        the model produced.
-    2. Month name found (e.g. "June 15") -> trust the model's month/day, but
+    2. Weekday name found ("next Friday") -> compute the actual date of
+       that upcoming weekday from entry_dt.
+    3. Month name found (e.g. "June 15") -> trust the model's month/day, but
        replace the year with entry_dt's year unless a year was genuinely
        stated near the month.
-    3. Neither found -> no real evidence for any date. Force date to null,
-       discarding whatever the model invented.
+    4. None of the above -> no real evidence for any date. Force date to
+       null, discarding whatever the model invented.
     """
     relative_offset = _detect_relative_day_offset(transcript)
+    weekday_date = _detect_next_weekday_date(transcript, entry_dt) if relative_offset is None else None
     month_mentioned = MONTH_PATTERN.search(transcript) is not None
 
     if relative_offset is not None:
         resolved_date = (entry_dt + timedelta(days=relative_offset)).strftime("%Y-%m-%d")
         for txn in data.get("transactions", []):
             txn["date"] = resolved_date
+
+    elif weekday_date is not None:
+        for txn in data.get("transactions", []):
+            txn["date"] = weekday_date
 
     elif month_mentioned:
         transcript_has_year = _transcript_has_explicit_year(transcript)

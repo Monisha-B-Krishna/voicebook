@@ -149,7 +149,7 @@ def get_customer_balance(
     import base64 as b64
     from nlp.tts.tts_client import synthesize_audio_bytes
 
-    spoken_text = f"{customer.name} ge {balance:.0f} rupees baaki ide."
+    spoken_text = f"{customer.name} ಗೆ {balance:.0f} rupees ಬಾಕಿ ಇದೆ."
     audio_base64 = None
     try:
         audio_bytes = synthesize_audio_bytes(spoken_text)
@@ -214,9 +214,9 @@ def get_customer_orders(
             spoken_parts.append(item_phrases)
 
     if spoken_parts:
-        spoken_text = f"{customer.name} ge " + "; ".join(spoken_parts) + " book agide."
+        spoken_text = f"{customer.name} ಗೆ " + "; ".join(spoken_parts) + " ಬುಕ್ ಆಗಿದೆ."
     else:
-        spoken_text = f"{customer.name} ge yaava booking illa."
+        spoken_text = f"{customer.name} ಗೆ ಯಾವುದೇ ಬುಕಿಂಗ್ ಇಲ್ಲ."
 
     import base64 as b64
     from nlp.tts.tts_client import synthesize_audio_bytes

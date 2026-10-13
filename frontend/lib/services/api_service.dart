@@ -212,4 +212,27 @@ class ApiService {
       return null;
     }
   }
+
+  /// Aggregate query: "which customers have a balance?" / "who owes more
+  /// than 5000?" - answers across ALL customers, not one named person.
+  Future<Map<String, dynamic>> getCustomersWithBalance({double minAmount = 0.0}) async {
+    final res = await _dio.get(
+      '$baseUrl/analytics/customers-with-balance',
+      queryParameters: {'min_amount': minAmount},
+      options: _authOptions,
+    );
+    return res.data as Map<String, dynamic>;
+  }
+
+  /// Aggregate query: "how many have booked chairs?" / "how many chairs
+  /// are left?" - answers both booking count and remaining stock for
+  /// one item, since both questions are naturally about the same item.
+  Future<Map<String, dynamic>> getItemStatus(String itemName) async {
+    final res = await _dio.get(
+      '$baseUrl/analytics/item-status',
+      queryParameters: {'item_name': itemName},
+      options: _authOptions,
+    );
+    return res.data as Map<String, dynamic>;
+  }
 }

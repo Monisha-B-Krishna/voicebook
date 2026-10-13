@@ -56,8 +56,10 @@ def process_voice_transaction(
     payment_txns = [t for t in nlu_result.transactions if t.intent == "PAYMENT"]
     return_txns = [t for t in nlu_result.transactions if t.intent == "RETURN"]
     query_txns = [t for t in nlu_result.transactions if t.intent == "QUERY"]
+    complete_txns = [t for t in nlu_result.transactions if t.intent == "COMPLETE"]
+    cancel_txns = [t for t in nlu_result.transactions if t.intent == "CANCEL"]
 
-    results = {"bookings": [], "payments": [], "returns": [], "queries": [], "errors": []}
+    results = {"bookings": [], "payments": [], "returns": [], "queries": [], "completions": [], "cancellations": [], "errors": []}
     new_booking_ids_by_customer = {}  # customer_name -> booking_id, for same-utterance payment attachment
 
     try:
@@ -264,6 +266,55 @@ def process_voice_transaction(
                 "note": "QUERY intent received but not processed here - "
                         "needs a separate read-only balance-lookup endpoint.",
             })
+
+        # ---------------- COMPLETE(S) and CANCEL(S) ----------------
+        # Both mark an existing booking's status, using the SAME safety
+        # pattern as ambiguous payments: if the customer has more than one
+        # open booking, we do NOT guess which one - we fail clearly and
+        # list the options. COMPLETE and CANCEL are opposite outcomes and
+        # are handled by the same helper with a different target status,
+        # never conflated into one another.
+        def _apply_status_change(txn, new_status: str, results_key: str, verb: str):
+            if not txn.customer_name:
+                results["errors"].append(f"{verb} request has no customer_name - cannot proceed.")
+                return
+
+            customer = find_or_create_customer(db, txn.customer_name)
+            open_bookings = (
+                db.query(Booking)
+                .filter(Booking.customer_id == customer.customer_id, Booking.status == "confirmed")
+                .order_by(Booking.booking_id.desc())
+                .all()
+            )
+
+            if not open_bookings:
+                results["errors"].append(
+                    f"No open booking found for '{txn.customer_name}' to mark as {new_status}."
+                )
+                return
+
+            if len(open_bookings) > 1:
+                results["errors"].append(
+                    f"'{txn.customer_name}' has {len(open_bookings)} open bookings - "
+                    f"cannot determine which one to {verb.lower()}. "
+                    f"Booking IDs: {[b.booking_id for b in open_bookings]}. "
+                    f"Nothing changed - please specify which booking."
+                )
+                return
+
+            target_booking = open_bookings[0]
+            target_booking.status = new_status
+
+            results[results_key].append({
+                "booking_id": target_booking.booking_id,
+                "customer": customer.name,
+            })
+
+        for txn in complete_txns:
+            _apply_status_change(txn, "completed", "completions", "Complete")
+
+        for txn in cancel_txns:
+            _apply_status_change(txn, "cancelled", "cancellations", "Cancel")
 
         # ---------------- LOG THE RAW UTTERANCE ----------------
         # If multiple bookings were created (multiple customers in one

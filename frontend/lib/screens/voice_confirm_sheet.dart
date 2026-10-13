@@ -72,6 +72,10 @@ class _VoiceConfirmSheetState extends State<VoiceConfirmSheet> {
         return context.tr('title_items_returned');
       case TransactionIntent.query:
         return context.tr('title_answer');
+      case TransactionIntent.complete:
+        return 'Mark Order Complete';
+      case TransactionIntent.cancel:
+        return 'Cancel Order';
       case TransactionIntent.unknown:
         return context.tr('title_not_understood');
     }

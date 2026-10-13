@@ -115,8 +115,44 @@ class _HomeScreenState extends State<HomeScreen> {
         final wantsOrders = asksAboutOrders && !asksAboutBalance;
 
         for (final q in queryTxns) {
-          if (q.customerName == null) continue;
           try {
+            // Aggregate queries have NO customer name - route these to the
+            // new cross-customer analytics endpoints instead of skipping
+            // them (which is what happened before this fix).
+            if (q.customerName == null) {
+              Map<String, dynamic> aggInfo;
+              if (q.item != null) {
+                aggInfo = await api.getItemStatus(q.item!);
+              } else {
+                aggInfo = await api.getCustomersWithBalance(minAmount: q.amount ?? 0.0);
+              }
+
+              if (!mounted) return;
+
+              if (aggInfo.containsKey('error')) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text(aggInfo['error'] as String)),
+                );
+                continue;
+              }
+
+              final aggText = aggInfo['spoken_text'] as String;
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text(aggText), duration: const Duration(seconds: 6)),
+              );
+
+              final aggAudioBase64 = aggInfo['audio_base64'] as String?;
+              if (aggAudioBase64 != null) {
+                try {
+                  final audioBytes = base64Decode(aggAudioBase64);
+                  await _audio.playBytes(audioBytes);
+                } catch (e) {
+                  debugPrint('TTS playback failed: $e');
+                }
+              }
+              continue;
+            }
+
             final info = wantsOrders
                 ? await api.getOrdersForCustomerName(q.customerName!)
                 : await api.getBalanceForCustomerName(q.customerName!);
@@ -347,18 +383,24 @@ class _HomeScreenState extends State<HomeScreen> {
     for (final txn in result.transactions) {
       switch (txn.intent) {
         case TransactionIntent.booking:
-          parts.add('${txn.customerName ?? ""} ge ${txn.quantity ?? ""} ${txn.item ?? ""} book agide');
+          parts.add('${txn.customerName ?? ""} ಗೆ ${txn.quantity ?? ""} ${txn.item ?? ""} ಬುಕ್ ಆಗಿದೆ');
           break;
         case TransactionIntent.payment:
-          parts.add('${txn.customerName ?? ""} inda ${txn.amount?.toStringAsFixed(0) ?? ""} rupees payment sigide');
+          parts.add('${txn.customerName ?? ""} ಇಂದ ${txn.amount?.toStringAsFixed(0) ?? ""} rupees payment ಸಿಕ್ಕಿದೆ');
           break;
         case TransactionIntent.returnItem:
-          parts.add('${txn.customerName ?? ""} ${txn.quantity ?? ""} ${txn.item ?? ""} return madidru');
+          parts.add('${txn.customerName ?? ""} ${txn.quantity ?? ""} ${txn.item ?? ""} ರಿಟರ್ನ್ ಮಾಡಿದ್ದಾರೆ');
+          break;
+        case TransactionIntent.complete:
+          parts.add('${txn.customerName ?? ""} order complete ಆಗಿದೆ');
+          break;
+        case TransactionIntent.cancel:
+          parts.add('${txn.customerName ?? ""} order cancel ಆಗಿದೆ');
           break;
         default:
           break;
       }
     }
-    return parts.isEmpty ? '' : '${parts.join(". ")}. Correct-a?';
+    return parts.isEmpty ? '' : '${parts.join(". ")}. ಸರಿನಾ?';
   }
 }

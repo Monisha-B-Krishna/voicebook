@@ -16,6 +16,11 @@ class IntentType(str, Enum):
     PAYMENT = "PAYMENT"
     RETURN = "RETURN"
     QUERY = "QUERY"
+    COMPLETE = "COMPLETE"  # marks an existing booking as finished/completed
+    CANCEL = "CANCEL"      # marks an existing booking as cancelled - kept
+                           # distinct from COMPLETE since "cancel this
+                           # order" and "this order is complete" are
+                           # opposite outcomes, not variants of one intent
     UNKNOWN = "UNKNOWN"
 
 

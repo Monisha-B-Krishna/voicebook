@@ -68,6 +68,18 @@ class Transaction(BaseModel):
         description="'advance', 'balance', 'full' - only relevant for PAYMENT intent",
     )
 
+    needs_clarification: Optional[str] = Field(
+        default=None,
+        description="Name of the field the NLU model could not confidently fill in and "
+        "needs the owner to answer out loud before this transaction can be saved - e.g. "
+        "'customer_name'. Set ONLY when a field that matters for this intent is missing "
+        "or genuinely ambiguous (e.g. no name was stated anywhere in the utterance for "
+        "this transaction, or a pronoun like 'avaru' could refer to more than one person "
+        "named earlier). NOT set for aggregate QUERY transactions where customer_name is "
+        "null on purpose (e.g. 'who owes more than 5000?') - that's an intentional null, "
+        "not a gap to ask about. Null/absent means nothing needs clarifying.",
+    )
+
     @field_validator("quantity")
     @classmethod
     def quantity_must_be_positive(cls, v):

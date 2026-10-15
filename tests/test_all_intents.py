@@ -20,6 +20,9 @@ TEST_SENTENCES = {
     "RETURN": "Ramesh fifty chairs kotta, avaru forty return madidru",
     "QUERY": "Suresh estu baaki haakidaane?",
     "MULTI-INTENT": "Raju ge June 15 ge 50 pathre booking maadidaare, 2000 advance kottidaare",
+    "PRONOUN-ONE-NAME": "Ramesh fifty chairs kotta, avaru forty return madidru",
+    "PRONOUN-AMBIGUOUS": "Ramesh fifty chairs kotta, Suresh ten pathre kotta, avaru innondu order maadidru",
+    "NO-NAME-AT-ALL": "fifty chairs return madidru",
 }
 
 if __name__ == "__main__":

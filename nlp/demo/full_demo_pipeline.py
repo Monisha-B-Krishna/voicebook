@@ -32,9 +32,10 @@ import argparse
 
 from nlp.asr.asr_client import transcribe
 from nlp.nlu.nlu_client import parse_utterance
-from nlp.demo.confirm import confirm_with_owner
+from nlp.demo.confirm import confirm_with_owner, resolve_clarifications
 from nlp.demo.storage import save_transaction
 from nlp.audio_io.mic_record import record_from_mic
+
 
 
 MAX_ATTEMPTS = 3
@@ -66,6 +67,11 @@ def run(audio_path: str = None, text: str = None, backend: str = None, live: boo
         result = parse_utterance(transcript, backend=backend)
         print("Parsed result:")
         print(result.model_dump_json(indent=2))
+
+        # Step 3.5: Resolve any fields the NLU layer flagged as needing the
+        # owner's input (e.g. no name stated/ambiguous pronoun) before we
+        # read anything back for confirmation.
+        result = resolve_clarifications(result)
 
         # Step 4: Confirmation
         confirmed = confirm_with_owner(result)

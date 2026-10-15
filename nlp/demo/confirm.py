@@ -21,6 +21,7 @@ from nlp.audio_io.mic_record import record_from_mic
 from nlp.asr.asr_client import transcribe
 
 
+
 def _describe_transaction(txn: Transaction) -> str:
     """Builds a plain-English readback sentence for one transaction."""
     parts = [f"{txn.intent.value}"]
@@ -70,6 +71,48 @@ REJECT_WORDS = {
 # we flag it as unclear so the flow asks again rather than silently
 # misinterpreting a correction as approval.
 MAX_SIMPLE_REPLY_WORDS = 6
+
+def resolve_clarifications(result: NLUResult) -> NLUResult:
+    """
+    Step 3.5 of the pipeline - runs BEFORE confirm_with_owner's readback.
+
+    For any transaction the NLU layer flagged with needs_clarification (no
+    name stated anywhere, or a pronoun that could point at more than one
+    person - see nlu_client.py's PRONOUN RESOLUTION rule), this asks the
+    owner directly by voice, exactly like a real clerk would: "who is this
+    for?" Whatever they say becomes that transaction's customer_name, and
+    the flag is cleared so it reads back and saves normally.
+
+    This mutates and returns the same NLUResult - by the time
+    confirm_with_owner() sees it, there should be no unresolved
+    needs_clarification left on any transaction.
+    """
+    for i, txn in enumerate(result.transactions, 1):
+        if not txn.needs_clarification:
+            continue
+
+        if txn.needs_clarification == "customer_name":
+            detail = _describe_transaction(txn)
+            question = f"{detail}. Yaaru idu? Who is this for?"
+        else:
+            # Future-proofing: some other field could need clarifying later.
+            question = f"I didn't catch the {txn.needs_clarification} for item {i}. Please repeat it."
+
+        print(f"\n--- Needs clarification (transaction {i}): {txn.needs_clarification} ---")
+        speak(question)
+
+        reply_audio_path = record_from_mic(
+            f"clarify_{i}",
+            prompt="Press ENTER to START speaking your answer...",
+        )
+        reply_transcript = transcribe(reply_audio_path).strip()
+        print(f"Heard: {reply_transcript}")
+
+        if txn.needs_clarification == "customer_name":
+            txn.customer_name = reply_transcript
+        txn.needs_clarification = None
+
+    return result
 
 
 def confirm_with_owner(result: NLUResult) -> bool:

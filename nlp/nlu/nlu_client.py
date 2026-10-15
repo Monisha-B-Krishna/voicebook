@@ -75,6 +75,22 @@ if that means two transactions in the same output have two different customer_na
 Never leave customer_name null just because a different name appeared earlier in the \
 utterance for a different transaction.
 
+PRONOUN RESOLUTION - when a transaction has NO name of its own, but a pronoun ("avaru", \
+"he", "she", "they") points back at someone, follow this exact rule:
+  1. If exactly ONE person's name was stated earlier in the SAME utterance, that pronoun \
+refers to that person - fill customer_name with that name. Example: "Ramesh fifty chairs \
+kotta, avaru forty return madidru" -> the RETURN transaction has no name of its own, but \
+only "Ramesh" was named earlier, so customer_name = "Ramesh" for that transaction too.
+  2. If NO name was stated anywhere in the utterance for this transaction (no name, no \
+usable pronoun antecedent), leave customer_name null AND set needs_clarification = \
+"customer_name" - the owner will be asked who this is for. Do not guess a name.
+  3. If MORE THAN ONE distinct person's name was stated earlier in the utterance and it \
+is not clear which one the pronoun refers to, do NOT guess which one is meant. Leave \
+customer_name null AND set needs_clarification = "customer_name" instead.
+Rule 2 and 3 do NOT apply to aggregate QUERY transactions (see below) - those correctly \
+have no customer_name at all and should NOT set needs_clarification, since there was \
+never a specific person to ask about.
+
 AGGREGATE QUERIES (asking about MULTIPLE customers or items, not one named person): \
 some QUERY utterances genuinely have NO customer name at all - e.g. "which customers \
 have a balance?", "who owes more than 5000 rupees?", "how many people have booked \
@@ -140,7 +156,8 @@ automatically outside your response):
       "item": "...",
       "quantity": null,
       "amount": null,
-      "payment_type": null
+      "payment_type": null,
+      "needs_clarification": null
     }
   ],
   "is_multi_intent": false,

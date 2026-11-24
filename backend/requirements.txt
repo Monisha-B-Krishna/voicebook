@@ -3,3 +3,8 @@ uvicorn[standard]
 pydantic
 python-multipart
 minio
+SQLAlchemy
+psycopg2-binary
+requests
+python-dotenv
+groq

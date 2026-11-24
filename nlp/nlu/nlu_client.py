@@ -28,7 +28,7 @@ from shared.schemas.nlu_schema import NLUResult
 load_dotenv()
 
 # Change this to switch backends: "claude", "groq", or "ollama"
-BACKEND = "ollama"
+BACKEND = os.getenv("NLU_BACKEND", "ollama")
 
 SYSTEM_PROMPT = """You are the NLU layer for VoiceBook, a voice assistant for a \
 Kannada-speaking tent house (event equipment rental) owner in Bengaluru.

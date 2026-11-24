@@ -1,12 +1,21 @@
+
+import os
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 
-DATABASE_URL = (
-    "postgresql+psycopg2://"
-    "voicebook:voicebook_password@"
-    "localhost:5432/voicebook"
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "postgresql+psycopg2://voicebook:voicebook_password@localhost:5432/voicebook"
 )
+
+if DATABASE_URL.startswith("postgresql://"):
+    DATABASE_URL = DATABASE_URL.replace(
+        "postgresql://",
+        "postgresql+psycopg2://",
+        1
+    )
 
 
 engine = create_engine(
@@ -23,7 +32,6 @@ SessionLocal = sessionmaker(
 
 
 def get_db():
-
     db = SessionLocal()
 
     try:

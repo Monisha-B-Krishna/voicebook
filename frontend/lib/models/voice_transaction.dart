@@ -1,13 +1,13 @@
-/// Matches the REAL backend contract: shared/schemas/nlu_schema.py's
-/// NLUResult and Transaction Pydantic models.
-///
-/// IMPORTANT DIFFERENCE from the old VoiceIntent model this replaces:
-/// one utterance can produce MULTIPLE transactions (a multi-item booking,
-/// or a booking + payment together, or even bookings for two different
-/// customers in one sentence - all of these are real, tested cases in
-/// the actual NLU pipeline). The UI must show a LIST, not assume one.
 
-enum TransactionIntent { booking, payment, returnItem, query, complete, cancel, unknown }
+enum TransactionIntent {
+  booking,
+  payment,
+  returnItem,
+  query,
+  complete,
+  cancel,
+  unknown,
+}
 
 TransactionIntent _intentFromString(String? value) {
   switch (value) {
@@ -28,12 +28,10 @@ TransactionIntent _intentFromString(String? value) {
   }
 }
 
-/// One structured transaction - matches Python's Transaction model exactly,
-/// field-for-field (snake_case JSON keys, same as the Pydantic model uses).
 class VoiceTransaction {
   final TransactionIntent intent;
   final String? customerName;
-  final String? date; // ISO date string "YYYY-MM-DD", or null
+  final String? date;
   final String? item;
   final int? quantity;
   final double? amount;
@@ -83,9 +81,6 @@ class VoiceTransaction {
         'payment_type': paymentType,
       };
 
-  /// Returns a copy with fields overridden - used when the owner EDITS a
-  /// transaction on the confirmation screen before saving (e.g. correcting
-  /// a misheard item name or quantity).
   VoiceTransaction copyWith({
     TransactionIntent? intent,
     String? customerName,
@@ -107,15 +102,13 @@ class VoiceTransaction {
   }
 }
 
-/// The full parsed result of one utterance - matches Python's NLUResult
-/// exactly. This is what /voice/process-audio returns, and (after the
-/// owner reviews/edits/confirms) what gets sent back to /voice-transactions/.
 class VoiceParseResult {
   final String rawTranscript;
   final String entryTimestamp;
   final List<VoiceTransaction> transactions;
   final bool isMultiIntent;
   final String? confidenceNote;
+  final int? bookingId;
 
   VoiceParseResult({
     required this.rawTranscript,
@@ -123,18 +116,23 @@ class VoiceParseResult {
     required this.transactions,
     required this.isMultiIntent,
     this.confidenceNote,
+    this.bookingId,
   });
 
   factory VoiceParseResult.fromJson(Map<String, dynamic> json) {
     final txnList = (json['transactions'] as List?) ?? [];
+
     return VoiceParseResult(
       rawTranscript: json['raw_transcript'] as String? ?? '',
       entryTimestamp: json['entry_timestamp'] as String? ?? '',
       transactions: txnList
-          .map((t) => VoiceTransaction.fromJson(t as Map<String, dynamic>))
+          .map((t) => VoiceTransaction.fromJson(
+                t as Map<String, dynamic>,
+              ))
           .toList(),
       isMultiIntent: json['is_multi_intent'] as bool? ?? false,
       confidenceNote: json['confidence_note'] as String?,
+      bookingId: (json['booking_id'] as num?)?.toInt(),
     );
   }
 
@@ -144,32 +142,37 @@ class VoiceParseResult {
         'transactions': transactions.map((t) => t.toJson()).toList(),
         'is_multi_intent': isMultiIntent,
         'confidence_note': confidenceNote,
+        'booking_id': bookingId,
       };
 
-  /// Returns a copy of this result with one transaction replaced - used
-  /// when the owner edits a single line on the confirm screen.
-  VoiceParseResult withTransactionAt(int index, VoiceTransaction updated) {
+  VoiceParseResult withTransactionAt(
+    int index,
+    VoiceTransaction updated,
+  ) {
     final newList = List<VoiceTransaction>.from(transactions);
     newList[index] = updated;
+
     return VoiceParseResult(
       rawTranscript: rawTranscript,
       entryTimestamp: entryTimestamp,
       transactions: newList,
       isMultiIntent: isMultiIntent,
       confidenceNote: confidenceNote,
+      bookingId: bookingId,
     );
   }
 
-  /// Returns a copy with one transaction removed - used when the owner
-  /// rejects just ONE line of a multi-transaction result, not all of it.
   VoiceParseResult withoutTransactionAt(int index) {
-    final newList = List<VoiceTransaction>.from(transactions)..removeAt(index);
+    final newList = List<VoiceTransaction>.from(transactions)
+      ..removeAt(index);
+
     return VoiceParseResult(
       rawTranscript: rawTranscript,
       entryTimestamp: entryTimestamp,
       transactions: newList,
       isMultiIntent: newList.length > 1,
       confidenceNote: confidenceNote,
+      bookingId: bookingId,
     );
   }
 }

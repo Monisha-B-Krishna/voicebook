@@ -31,51 +31,79 @@ router = APIRouter(
 
 @router.get("/customers-with-balance")
 def customers_with_balance(
-    min_amount: float = Query(default=0.0, description="Only include customers owing more than this amount"),
+    min_amount: float = Query(0.0, ge=0),
     db: Session = Depends(get_db)
 ):
-    """
-    Lists customers whose outstanding balance exceeds min_amount.
-    min_amount=0 (the default) answers "which customers have a balance
-    at all?" - a specific threshold answers "who owes more than X?".
-    """
+    from decimal import Decimal
+
+    threshold = Decimal(str(min_amount))
+    customer_balances = []
+
     customers = db.query(Customer).all()
-    results = []
 
-    for cust in customers:
-        bookings = db.query(Booking).filter(
-            Booking.customer_id == cust.customer_id,
-            Booking.status != "cancelled"
-        ).all()
-        if not bookings:
-            continue
+    for customer in customers:
+        outstanding = Decimal("0.00")
 
-        total_booked = sum(float(b.total_amount) for b in bookings)
-        booking_ids = [b.booking_id for b in bookings]
-        payments = db.query(Payment).filter(
-            Payment.booking_id.in_(booking_ids),
-            Payment.payment_status == "paid"
-        ).all()
-        total_paid = sum(float(p.amount) for p in payments)
-        balance = total_booked - total_paid
+        for booking in customer.bookings:
+            if booking.status.lower() == "cancelled":
+                continue
 
-        if balance > min_amount:
-            results.append({"customer_id": cust.customer_id, "name": cust.name, "balance_due": balance})
+            paid_amount = sum(
+                (
+                    Decimal(str(payment.amount))
+                    for payment in booking.payments
+                    if payment.payment_status.lower() == "paid"
+                ),
+                Decimal("0.00")
+            )
 
-    results.sort(key=lambda r: r["balance_due"], reverse=True)
+            booking_total = Decimal(str(booking.total_amount))
+            remaining = max(
+                Decimal("0.00"),
+                booking_total - paid_amount
+            )
 
-    if results:
-        names_phrase = ", ".join(f"{r['name']} ({r['balance_due']:.0f})" for r in results[:5])
-        more_note = f" ಮತ್ತು ಇನ್ನೂ {len(results) - 5}" if len(results) > 5 else ""
-        if min_amount > 0:
-            spoken_text = f"{len(results)} customers ge {min_amount:.0f} rupees ಗಿಂತ ಜಾಸ್ತಿ ಬಾಕಿ ಇದೆ: {names_phrase}{more_note}."
-        else:
-            spoken_text = f"{len(results)} customers ge ಬಾಕಿ ಇದೆ: {names_phrase}{more_note}."
+            outstanding += remaining
+
+        if outstanding > threshold:
+            customer_balances.append({
+                "customer_id": customer.customer_id,
+                "customer_name": customer.name,
+                "outstanding_balance": float(outstanding)
+            })
+
+    customer_balances.sort(
+        key=lambda x: x["outstanding_balance"],
+        reverse=True
+    )
+
+    total_outstanding = sum(
+        (
+            Decimal(str(c["outstanding_balance"]))
+            for c in customer_balances
+        ),
+        Decimal("0.00")
+    )
+
+    if customer_balances:
+        details = "; ".join(
+            f'{c["customer_name"]} owes '
+            f'{c["outstanding_balance"]:.2f}'
+            for c in customer_balances
+        )
+
+        spoken_text = (
+            f"Customers with outstanding balances: {details}. "
+            f"Total outstanding amount: {total_outstanding:.2f}."
+        )
     else:
-        spoken_text = "ಯಾವ customer ಗೂ ಬಾಕಿ ಇಲ್ಲ." if min_amount == 0 else \
-            f"ಯಾವ customer ಗೂ {min_amount:.0f} rupees ಗಿಂತ ಜಾಸ್ತಿ ಬಾಕಿ ಇಲ್ಲ."
+        spoken_text = (
+            f"No customers have an outstanding balance "
+            f"above {float(threshold):.2f}."
+        )
 
     audio_base64 = None
+
     try:
         audio_bytes = synthesize_audio_bytes(spoken_text)
         audio_base64 = b64.b64encode(audio_bytes).decode("utf-8")
@@ -83,10 +111,12 @@ def customers_with_balance(
         print(f"[analytics] TTS generation failed: {e}")
 
     return {
-        "count": len(results),
-        "customers": results,
+        "customers": customer_balances,
+        "customer_count": len(customer_balances),
+        "total_outstanding": float(total_outstanding),
+        "min_amount": float(threshold),
         "spoken_text": spoken_text,
-        "audio_base64": audio_base64,
+        "audio_base64": audio_base64
     }
 
 
@@ -96,27 +126,48 @@ def item_status(
     db: Session = Depends(get_db)
 ):
     """
-    Answers both "how many customers have booked <item>?" and "how much
-    <item> is remaining?" in one call, since both questions are about the
-    same item and naturally asked together.
+    Returns total inventory, total booked quantity,
+    remaining quantity and number of bookings.
     """
     inv, score = resolve_item_id(db, item_name)
-    if inv is None:
-        return {"error": f"Could not match '{item_name}' to any inventory item."}
 
-    booked_count = (
+    if inv is None:
+        return {
+            "error": f"Could not match '{item_name}' to any inventory item."
+        }
+
+    booking_rows = (
         db.query(BookingItem)
-        .join(Booking, Booking.booking_id == BookingItem.booking_id)
-        .filter(BookingItem.item_id == inv.item_id, Booking.status != "cancelled")
-        .count()
+        .join(
+            Booking,
+            Booking.booking_id == BookingItem.booking_id
+        )
+        .filter(
+            BookingItem.item_id == inv.item_id,
+            Booking.status != "cancelled"
+        )
+        .all()
+    )
+
+    booked_quantity = sum(
+        item.quantity for item in booking_rows
+    )
+
+    booking_count = len(booking_rows)
+
+    remaining_quantity = max(
+        0,
+        inv.available_quantity - booked_quantity
     )
 
     spoken_text = (
-        f"{inv.item_name} ge ಇಲ್ಲಿಯವರೆಗೆ {booked_count} bookings ಆಗಿದೆ, "
-        f"{inv.available_quantity} stock ನಲ್ಲಿ ಇದೆ."
+        f"{inv.item_name}: Total stock {inv.available_quantity}, "
+        f"{booked_quantity} booked, "
+        f"{remaining_quantity} remaining."
     )
 
     audio_base64 = None
+
     try:
         audio_bytes = synthesize_audio_bytes(spoken_text)
         audio_base64 = b64.b64encode(audio_bytes).decode("utf-8")
@@ -125,8 +176,10 @@ def item_status(
 
     return {
         "item_name": inv.item_name,
-        "booked_count": booked_count,
-        "available_quantity": inv.available_quantity,
+        "total_inventory": inv.available_quantity,
+        "booked_quantity": booked_quantity,
+        "remaining_quantity": remaining_quantity,
+        "booking_count": booking_count,
         "match_confidence": score,
         "spoken_text": spoken_text,
         "audio_base64": audio_base64,

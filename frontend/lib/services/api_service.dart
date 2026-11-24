@@ -1,55 +1,47 @@
+
 import 'dart:convert';
+import 'dart:typed_data';
+
 import 'package:dio/dio.dart';
+
 import '../models/voice_transaction.dart';
 
-/// Talks to the REAL FastAPI backend. Two endpoints matter for the voice
-/// flow specifically:
-///
-///   POST /voice/process-audio  - uploads recorded audio, backend runs
-///                                 Sarvam ASR + NLU, returns a PARSED
-///                                 VoiceParseResult. Nothing is saved yet.
-///
-///   POST /voice-transactions/  - takes a (possibly owner-edited)
-///                                 VoiceParseResult and actually saves it:
-///                                 resolves customer/item names to real
-///                                 database IDs, creates bookings/payments/
-///                                 returns, all in one transaction.
-///
-/// Set [baseUrl] to your backend's address. On an Android emulator talking
-/// to a backend running on your own machine, use 10.0.2.2 instead of
-/// localhost/127.0.0.1 - the emulator can't see the host machine under
-/// that name. On a real phone, use your machine's actual LAN IP address.
 class ApiService {
   ApiService({String? baseUrl})
-      : baseUrl = baseUrl ?? const String.fromEnvironment(
+      : baseUrl = baseUrl ??
+            const String.fromEnvironment(
               'API_BASE_URL',
-              defaultValue: 'http://10.0.2.2:8000',
+              defaultValue: 'http://10.159.185.7:8000',
             ),
-        _dio = Dio(BaseOptions(
-          connectTimeout: const Duration(seconds: 8),
-          receiveTimeout: const Duration(seconds: 30),
-        ));
+        _dio = Dio(
+          BaseOptions(
+            connectTimeout: const Duration(seconds: 8),
+            receiveTimeout: const Duration(seconds: 30),
+          ),
+        );
 
   final String baseUrl;
   final Dio _dio;
   String? authToken;
 
   Options get _authOptions => Options(
-        headers: authToken == null ? null : {'Authorization': 'Bearer $authToken'},
+        headers: authToken == null
+            ? null
+            : {'Authorization': 'Bearer $authToken'},
       );
 
-  /// Uploads recorded audio to /voice/process-audio and returns the parsed
-  /// result. Throws if the backend is unreachable or returns an error -
-  /// the caller (home_screen.dart) should catch this and show a clear
-  /// message, rather than silently falling back to fake data.
+  // ---------- Voice processing ----------
+
   Future<VoiceParseResult> sendAudioForProcessing(
-    String audioFilePath, {
+    Uint8List audioBytes, {
     String nluBackend = 'groq',
+    String filename = 'voice.wav',
   }) async {
     final formData = FormData.fromMap({
-      // field name MUST be "file" - matches the backend's
-      // `file: UploadFile = File(...)` parameter name exactly.
-      'file': await MultipartFile.fromFile(audioFilePath, filename: 'voice.wav'),
+      'file': MultipartFile.fromBytes(
+        audioBytes,
+        filename: filename,
+      ),
     });
 
     final res = await _dio.post(
@@ -60,17 +52,98 @@ class ApiService {
     );
 
     final body = res.data as Map<String, dynamic>;
+
     if (body['status'] == 'error') {
       throw Exception(body['message'] ?? 'Voice processing failed');
     }
-    return VoiceParseResult.fromJson(body['result'] as Map<String, dynamic>);
+
+    return VoiceParseResult.fromJson(
+      body['result'] as Map<String, dynamic>,
+    );
   }
 
-  /// Saves a confirmed (possibly owner-edited) VoiceParseResult by calling
-  /// /voice-transactions/. Returns the backend's results summary (what was
-  /// actually created, and any errors like "item not found in inventory"
-  /// or "customer has multiple open bookings") so the UI can show it.
-  Future<Map<String, dynamic>> saveVoiceResult(VoiceParseResult result) async {
+  Future<String> transcribeOnly(Uint8List audioBytes) async {
+    final formData = FormData.fromMap({
+      'file': MultipartFile.fromBytes(
+        audioBytes,
+        filename: 'reply.wav',
+      ),
+    });
+
+    final res = await _dio.post(
+      '$baseUrl/voice/transcribe-only',
+      data: formData,
+      options: _authOptions,
+    );
+
+    final body = res.data as Map<String, dynamic>;
+
+    if (body['status'] == 'error') {
+      throw Exception(body['message'] ?? 'Transcription failed');
+    }
+
+    return body['transcript'] as String;
+  }
+
+  // ---------- Audio archive ----------
+
+  Future<Map<String, dynamic>> uploadAudioArchive({
+    required Uint8List audioBytes,
+    required String filename,
+    String? transcript,
+    String? language,
+  }) async {
+    final formData = FormData.fromMap({
+      'file': MultipartFile.fromBytes(
+        audioBytes,
+        filename: filename,
+      ),
+      if (transcript != null && transcript.trim().isNotEmpty)
+        'transcript': transcript,
+      if (language != null && language.trim().isNotEmpty)
+        'language': language,
+    });
+
+    final res = await _dio.post(
+      '$baseUrl/audio-archive/',
+      data: formData,
+      options: _authOptions,
+    );
+
+    return Map<String, dynamic>.from(res.data as Map);
+  }
+
+  Future<List<Map<String, dynamic>>> fetchAudioArchive() async {
+    final res = await _dio.get(
+      '$baseUrl/audio-archive/',
+      options: _authOptions,
+    );
+
+    final body = res.data;
+
+    if (body is List) {
+      return List<Map<String, dynamic>>.from(body);
+    }
+
+    if (body is Map && body['items'] is List) {
+      return List<Map<String, dynamic>>.from(body['items']);
+    }
+
+    return [];
+  }
+
+  Future<void> deleteArchivedAudio(int audioId) async {
+    await _dio.delete(
+      '$baseUrl/audio-archive/$audioId',
+      options: _authOptions,
+    );
+  }
+
+  // ---------- Transaction saving ----------
+
+  Future<Map<String, dynamic>> saveVoiceResult(
+    VoiceParseResult result,
+  ) async {
     final res = await _dio.post(
       '$baseUrl/voice-transactions/',
       data: result.toJson(),
@@ -78,61 +151,79 @@ class ApiService {
     );
 
     final body = res.data as Map<String, dynamic>;
+
     if (body['status'] == 'error') {
       throw Exception(body['message'] ?? 'Saving transaction failed');
     }
+
     return body['results'] as Map<String, dynamic>;
   }
 
-  // ---------- Read-only data fetches (replace AppDataProvider's mock lists) ----------
+  // ---------- Read-only data fetches ----------
 
   Future<List<Map<String, dynamic>>> fetchCustomers() async {
-    final res = await _dio.get('$baseUrl/customers/', options: _authOptions);
+    final res = await _dio.get(
+      '$baseUrl/customers/',
+      options: _authOptions,
+    );
+
     return List<Map<String, dynamic>>.from(res.data as List);
   }
 
   Future<List<Map<String, dynamic>>> fetchInventory() async {
-    final res = await _dio.get('$baseUrl/inventory/', options: _authOptions);
+    final res = await _dio.get(
+      '$baseUrl/inventory/',
+      options: _authOptions,
+    );
+
     return List<Map<String, dynamic>>.from(res.data as List);
   }
 
   Future<List<Map<String, dynamic>>> fetchBookings() async {
-    final res = await _dio.get('$baseUrl/bookings/', options: _authOptions);
+    final res = await _dio.get(
+      '$baseUrl/bookings/',
+      options: _authOptions,
+    );
+
     return List<Map<String, dynamic>>.from(res.data as List);
   }
 
   Future<List<Map<String, dynamic>>> fetchPayments() async {
-    final res = await _dio.get('$baseUrl/payments/', options: _authOptions);
+    final res = await _dio.get(
+      '$baseUrl/payments/',
+      options: _authOptions,
+    );
+
     return List<Map<String, dynamic>>.from(res.data as List);
   }
 
-  /// Generic GET helper for endpoints without a dedicated typed method
-  /// above (e.g. /booking-items/, /returns/, /customers/{id}/aliases) -
-  /// used by AppDataProvider's client-side joins.
   Future<dynamic> fetchRaw(String path) async {
-    final res = await _dio.get('$baseUrl$path', options: _authOptions);
+    final res = await _dio.get(
+      '$baseUrl$path',
+      options: _authOptions,
+    );
+
     return res.data;
   }
 
-  // ---------- Customer alias check (matches nlp_alias_check.py's flow) ----------
+  // ---------- Customer alias check ----------
 
-  /// Checks if [name] is similar to an existing customer. Returns a list
-  /// of {customer_id, name, similarity} maps, or an empty list if no
-  /// similar match exists. NEVER auto-merges - only suggests, per the
-  /// team's decision that alias confirmation must be explicit.
-  Future<List<Map<String, dynamic>>> checkSimilarCustomers(String name) async {
+  Future<List<Map<String, dynamic>>> checkSimilarCustomers(
+    String name,
+  ) async {
     final res = await _dio.get(
       '$baseUrl/customers/similar',
       queryParameters: {'name': name},
       options: _authOptions,
     );
+
     return List<Map<String, dynamic>>.from(res.data as List);
   }
 
-  /// Records a confirmed alias, AFTER the owner has explicitly confirmed
-  /// on screen that [aliasName] refers to the existing customer
-  /// [existingCustomerId].
-  Future<void> addCustomerAlias(int existingCustomerId, String aliasName) async {
+  Future<void> addCustomerAlias(
+    int existingCustomerId,
+    String aliasName,
+  ) async {
     await _dio.post(
       '$baseUrl/customers/$existingCustomerId/aliases',
       data: {'alias_name': aliasName},
@@ -140,99 +231,92 @@ class ApiService {
     );
   }
 
-  /// Answers a QUERY intent (e.g. "what does Suresh owe?") by looking up
-  /// the customer by name, then fetching their computed balance. Returns
-  /// null if no matching customer was found.
-  Future<Map<String, dynamic>?> getBalanceForCustomerName(String customerName) async {
+  Future<Map<String, dynamic>?> getBalanceForCustomerName(
+    String customerName,
+  ) async {
     final customers = await fetchCustomers();
+
     final match = customers.firstWhere(
-      (c) => (c['name'] as String).toLowerCase() == customerName.toLowerCase(),
+      (c) => (c['name'] as String).toLowerCase() ==
+          customerName.toLowerCase(),
       orElse: () => {},
     );
+
     if (match.isEmpty) return null;
 
     final res = await _dio.get(
       '$baseUrl/customers/${match['customer_id']}/balance',
       options: _authOptions,
     );
+
     return res.data as Map<String, dynamic>;
   }
 
-  /// Answers "what did this customer order?" type questions - a DIFFERENT
-  /// question from balance, needing a different endpoint/answer.
-  Future<Map<String, dynamic>?> getOrdersForCustomerName(String customerName) async {
+  Future<Map<String, dynamic>?> getOrdersForCustomerName(
+    String customerName,
+  ) async {
     final customers = await fetchCustomers();
+
     final match = customers.firstWhere(
-      (c) => (c['name'] as String).toLowerCase() == customerName.toLowerCase(),
+      (c) => (c['name'] as String).toLowerCase() ==
+          customerName.toLowerCase(),
       orElse: () => {},
     );
+
     if (match.isEmpty) return null;
 
     final res = await _dio.get(
       '$baseUrl/customers/${match['customer_id']}/orders',
       options: _authOptions,
     );
+
     return res.data as Map<String, dynamic>;
   }
 
-  /// Transcribes short audio WITHOUT running the full NLU pipeline -
-  /// used for yes/no confirmation replies where we only need the words,
-  /// not structured intent extraction (faster, and avoids wasting an
-  /// LLM call on something a simple keyword match can handle).
-  Future<String> transcribeOnly(String audioFilePath) async {
-    final formData = FormData.fromMap({
-      'file': await MultipartFile.fromFile(audioFilePath, filename: 'reply.wav'),
-    });
-    final res = await _dio.post(
-      '$baseUrl/voice/transcribe-only',
-      data: formData,
-      options: _authOptions,
-    );
-    final body = res.data as Map<String, dynamic>;
-    if (body['status'] == 'error') {
-      throw Exception(body['message'] ?? 'Transcription failed');
-    }
-    return body['transcript'] as String;
-  }
+  // ---------- Text to speech ----------
 
-  /// General-purpose TTS: converts any text to spoken Kannada audio bytes.
-  /// Returns null if synthesis fails (e.g. Sarvam credits exhausted) -
-  /// callers should fall back to showing text only in that case.
   Future<List<int>?> synthesizeSpeech(String text) async {
     try {
       final res = await _dio.post(
         '$baseUrl/tts/synthesize',
-        data: {'text': text, 'language_code': 'kn-IN'},
+        data: {
+          'text': text,
+          'language_code': 'kn-IN',
+        },
         options: _authOptions,
       );
+
       final body = res.data as Map<String, dynamic>;
+
       if (body['status'] != 'success') return null;
+
       return base64Decode(body['audio_base64'] as String);
     } catch (e) {
       return null;
     }
   }
 
-  /// Aggregate query: "which customers have a balance?" / "who owes more
-  /// than 5000?" - answers across ALL customers, not one named person.
-  Future<Map<String, dynamic>> getCustomersWithBalance({double minAmount = 0.0}) async {
+  // ---------- Analytics ----------
+
+  Future<Map<String, dynamic>> getCustomersWithBalance({
+    double minAmount = 0.0,
+  }) async {
     final res = await _dio.get(
       '$baseUrl/analytics/customers-with-balance',
       queryParameters: {'min_amount': minAmount},
       options: _authOptions,
     );
+
     return res.data as Map<String, dynamic>;
   }
 
-  /// Aggregate query: "how many have booked chairs?" / "how many chairs
-  /// are left?" - answers both booking count and remaining stock for
-  /// one item, since both questions are naturally about the same item.
   Future<Map<String, dynamic>> getItemStatus(String itemName) async {
     final res = await _dio.get(
       '$baseUrl/analytics/item-status',
       queryParameters: {'item_name': itemName},
       options: _authOptions,
     );
+
     return res.data as Map<String, dynamic>;
   }
 }

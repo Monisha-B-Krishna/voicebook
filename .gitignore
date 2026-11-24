@@ -8,3 +8,16 @@ data/transactions.json
 api keys.txt
 backend/airflow/logs/
 backend/app/**/__pycache__/
+# Flutter build files
+frontend/build/
+frontend/.dart_tool/
+frontend/.flutter-plugins
+frontend/.flutter-plugins-dependencies/
+
+# Local backup files
+*.backup
+*.pre_return_item_backup
+
+# Environment secrets
+.env.*
+!.env.example
